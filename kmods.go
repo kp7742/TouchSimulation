@@ -1,5 +1,7 @@
 package main
 
+import "time"
+
 const (
 	x  = 746
 	y  = 1064
@@ -54,45 +56,24 @@ func Swipe(StartX, StartY, EndX, EndY int32) {
 }
 
 func main() {
+	//Using Common Display Resolution, 2340x1080
 	touchInputSetup(1080, 2340)
 
-	//time.Sleep(time.Second * 3)
-	//
-	//Swipe(x, y, x, ny)
-	//
-	//time.Sleep(time.Second * 3)
-	//
-	//Swipe(nx, y, x, ny)
-	//
-	//time.Sleep(time.Second * 3)
-	//
-	//Swipe(x, ny, x, y)
-	//
-	//time.Sleep(time.Second * 3)
-	//
-	//Swipe(x, ny, nx, y)
+	time.Sleep(time.Second * 3)
 
-	//touchInputStop()
-	//
-	//time.Sleep(time.Second * 6)
-	//
-	//touchInputSetup(1080, 2340)
-	//
-	//time.Sleep(time.Second * 3)
-	//
-	//Swipe(x, y, x, ny)
-	//
-	//time.Sleep(time.Second * 3)
-	//
-	//Swipe(nx, y, x, ny)
-	//
-	//time.Sleep(time.Second * 3)
-	//
-	//Swipe(x, ny, x, y)
-	//
-	//time.Sleep(time.Second * 3)
-	//
-	//Swipe(x, ny, nx, y)
+	Swipe(x, y, x, ny)
+
+	time.Sleep(time.Second * 3)
+
+	Swipe(nx, y, x, ny)
+
+	time.Sleep(time.Second * 3)
+
+	Swipe(x, ny, x, y)
+
+	time.Sleep(time.Second * 3)
+
+	Swipe(x, ny, nx, y)
 
 	for {
 		if syncChannel == nil {
