@@ -1,8 +1,9 @@
 ## Touch Simulation
-Touch Simulation is program made in Golang to simulate Touch Input in android devices using Virtual Display with UInput interface of Android(Linux) kernel. 
+Touch Simulation is program to simulate Touch Input in android devices using Virtual Display with UInput interface of Android(Linux) kernel.
 
-## Progress
-- Implemented in pure Golang(Without C bindings).
+There are 2 variants made in Golang and C++.
+
+## Features
 - Generate random data for uinput device.
 - Bridges Type-B device to Type-A device.
 - Simulate Original Touch Screen data.
@@ -10,14 +11,23 @@ Touch Simulation is program made in Golang to simulate Touch Input in android de
 - Test Program to check simulation.
 
 ## Notes
-- Not every device support directly, Modification may need
-- Need either root access or adb shell
+- Not every device support directly, Modification may need.
+- Need either root access or adb shell.
 	
-## How to Build
+## How to Build Go variant
 - Clone this repo.
 - Install Android NDK and Go Binaries, if not already.
-- Open bash in project folder and Execute build.sh script.
-- Output will generate in same folder.
+- Open bash in project directory and Execute build.sh script.
+- Output will be in bin directory.
+- Precompiled Binaries: [HERE](https://github.com/kp7742/TouchSimulation/tree/master/bin/)
+
+## How to Build C++ variant
+- Clone this repo.
+- Install Android NDK, if not already.
+- Open Shell/CMD in C++ directory.
+- Drag ndk-build from NDK in Shell or CMD and then Execute.
+- Output will be in libs directory.
+- Precompiled Binaries: [HERE](https://github.com/kp7742/TouchSimulation/tree/master/C++/libs/)
 
 ## Sources
 - [Linux Multi Touch Protocol](https://www.kernel.org/doc/Documentation/input/multi-touch-protocol.txt)
