@@ -19,7 +19,7 @@ There are 2 variants made in Golang and C++.
 - Install Android NDK and Go Binaries, if not already.
 - Open bash in project directory and Execute build.sh script.
 - Output will be in bin directory.
-- Precompiled Binaries: [HERE](https://github.com/kp7742/TouchSimulation/tree/master/bin/)
+- Precompiled Binaries: [HERE](https://github.com/kp7742/TouchSimulation/tree/main/bin/)
 
 ## How to Build C++ variant
 - Clone this repo.
@@ -27,7 +27,7 @@ There are 2 variants made in Golang and C++.
 - Open Shell/CMD in C++ directory.
 - Drag ndk-build from NDK in Shell or CMD and then Execute.
 - Output will be in libs directory.
-- Precompiled Binaries: [HERE](https://github.com/kp7742/TouchSimulation/tree/master/C++/libs/)
+- Precompiled Binaries: [HERE](https://github.com/kp7742/TouchSimulation/tree/main/C++/libs/)
 
 ## Sources
 - [Linux Multi Touch Protocol](https://www.kernel.org/doc/Documentation/input/multi-touch-protocol.txt)
