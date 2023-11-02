@@ -1,6 +1,13 @@
 package main
 
-import "time"
+import (
+	"bufio"
+	"fmt"
+	"log"
+	"os"
+	"strings"
+	"time"
+)
 
 const (
 	x  = 746
@@ -57,7 +64,10 @@ func Swipe(StartX, StartY, EndX, EndY int32) {
 
 func main() {
 	//Using Common Display Resolution, 2340x1080
-	touchInputSetup(1080, 2340)
+	if !touchInputSetup(TYPEB, 1440, 3216) {
+		log.Fatalln("No Touch Device Found!")
+		return
+	}
 
 	time.Sleep(time.Second * 3)
 
@@ -76,6 +86,13 @@ func main() {
 	Swipe(x, ny, nx, y)
 
 	for {
+		reader := bufio.NewReader(os.Stdin)
+		exit_code, _ := reader.ReadString('\n')
+		fmt.Print(exit_code)
+		if strings.Compare(strings.ToLower(exit_code[:len(exit_code)-1]), "exit") == 0 {
+			touchInputStop()
+			break
+		}
 		if syncChannel == nil {
 			break
 		}

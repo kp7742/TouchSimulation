@@ -4,35 +4,59 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
-	"github.com/lunixbochs/struc"
 	"os"
 	"path/filepath"
 	"syscall"
 	"time"
 	"unsafe"
+
+	"github.com/lunixbochs/struc"
 )
 
 // InputDevice A Linux input device
 type InputDevice struct {
-	Name string
-	Path string
-	AbsX AbsInfo
-	AbsY AbsInfo
-	Slot AbsInfo
-	File *os.File
+	Name           string
+	Path           string
+	Slots          int32
+	Version        int32
+	TouchXMin      int32
+	TouchXMax      int32
+	TouchYMin      int32
+	TouchYMax      int32
+	Grabed         bool
+	hasTouchMajor  bool
+	hasTouchMinor  bool
+	hasWidthMajor  bool
+	hasWidthMinor  bool
+	hasOrientation bool
+	hasPressure    bool
+	Dbits          *[evCnt / 8]byte
+	AbsBits        *[absCnt / 8]byte
+	KeyBits        *[keyCnt / 8]byte
+	PropBits       *[inputPropCnt / 8]byte
+	AbsInfos       map[int]AbsInfo
+	IID            InputID
+	File           *os.File
 }
 
-//Grab the input device exclusively.
+// Grab the input device exclusively.
 func (dev *InputDevice) Grab() error {
+	dev.Grabed = true
 	return ioctl(dev.File.Fd(), EVIOCGRAB(), uintptr(1))
 }
 
-//Release a grabbed input device.
+// Release a grabbed input device.
 func (dev *InputDevice) Release() error {
+	dev.Grabed = false
 	return ioctl(dev.File.Fd(), EVIOCGRAB(), uintptr(0))
 }
 
-//Fetch Active Input Devices
+// Determine if input device has specified Abs Key.
+func (dev *InputDevice) hasAbs(key int) bool {
+	return dev.AbsBits[key/8]&(1<<uint(key%8)) != 0
+}
+
+// Fetch Active Input Devices
 func getInputDevices() ([]*InputDevice, error) {
 	paths, err := filepath.Glob("/dev/input/event*")
 	if err != nil {
@@ -45,34 +69,110 @@ func getInputDevices() ([]*InputDevice, error) {
 		if isCharDevice(path) {
 			inDev, err := os.OpenFile(path, syscall.O_RDONLY|syscall.O_NONBLOCK, 0666)
 			if err == nil {
-				if hasSpecificAbs(inDev, absMtSlot) &&
-					hasSpecificAbs(inDev, absMtTrackingId) &&
-					hasSpecificAbs(inDev, absMtPositionX) &&
-					hasSpecificAbs(inDev, absMtPositionY) &&
-					hasSpecificProp(inDev, inputPropDirect) {
-					absX, err := getAbsInfo(inDev, absMtPositionX)
+				// Read Ev data
+				dBits := new([evCnt / 8]byte)
+				err := ioctl(inDev.Fd(), EVIOCGBIT(0, evMax), uintptr(unsafe.Pointer(dBits)))
+				if err != nil {
+					continue
+				}
+
+				// Read Abs data
+				absBits := new([absCnt / 8]byte)
+				err = ioctl(inDev.Fd(), EVIOCGBIT(evAbs, absMax), uintptr(unsafe.Pointer(absBits)))
+				if err != nil {
+					continue
+				}
+
+				// Read Prop data
+				propBits := new([inputPropCnt / 8]byte)
+				err = ioctl(inDev.Fd(), EVIOCGPROP(), uintptr(unsafe.Pointer(propBits)))
+				if err != nil {
+					continue
+				}
+
+				// Read Key data
+				keyBits := new([keyCnt / 8]byte)
+				err = ioctl(inDev.Fd(), EVIOCGBIT(evKey, keyMax), uintptr(unsafe.Pointer(keyBits)))
+				if err != nil {
+					continue
+				}
+
+				// Devices with ABS_MT_SLOT - 1 aren't MT devices, libevdev:libevdev.c#L319
+				if !hasSpecificAbs(absBits, absMtSlot-1) &&
+					hasSpecificAbs(absBits, absMtSlot) &&
+					hasSpecificAbs(absBits, absMtTrackingId) &&
+					hasSpecificAbs(absBits, absMtPositionX) &&
+					hasSpecificAbs(absBits, absMtPositionY) &&
+					hasSpecificProp(propBits, inputPropDirect) &&
+					hasSpecificKey(keyBits, btnTouch) {
+
+					id := &InputDevice{
+						Path:     path,
+						File:     inDev,
+						Dbits:    dBits,
+						AbsBits:  absBits,
+						KeyBits:  keyBits,
+						PropBits: propBits,
+					}
+
+					// Read all AbsInfos
+					for i := 0; i <= absMax; i++ {
+						if !hasSpecificAbs(absBits, i) {
+							continue
+						}
+
+						absInfo, err := getAbsInfo(inDev, i)
+						if err != nil {
+							continue
+						}
+
+						switch i {
+						case absMtSlot:
+							id.Slots = absInfo.Maximum + 1
+							break
+						case absMtTrackingId:
+							if absInfo.Maximum == absInfo.Minimum {
+								absInfo.Minimum = -1
+								absInfo.Maximum = 0xFFFF
+							}
+							break
+						case absMtPositionX:
+							id.TouchXMin = absInfo.Minimum
+							id.TouchXMax = absInfo.Maximum - absInfo.Minimum + 1
+							break
+						case absMtPositionY:
+							id.TouchYMin = absInfo.Minimum
+							id.TouchYMax = absInfo.Maximum - absInfo.Minimum + 1
+							break
+						}
+
+						if id.AbsInfos == nil {
+							id.AbsInfos = make(map[int]AbsInfo)
+						}
+						id.AbsInfos[i] = absInfo
+					}
+
+					// Read InputID
+					id.IID, err = getInputID(inDev)
 					if err != nil {
 						continue
 					}
 
-					absY, err := getAbsInfo(inDev, absMtPositionY)
+					// Read Driver Version
+					err := ioctl(inDev.Fd(), EVIOCGVERSION(), uintptr(unsafe.Pointer(&id.Version)))
 					if err != nil {
 						continue
 					}
 
-					slot, err := getAbsInfo(inDev, absMtSlot)
-					if err != nil {
-						continue
-					}
+					id.Name = getDeviceName(inDev)
+					id.hasTouchMajor = id.hasAbs(absMtTouchMajor)
+					id.hasTouchMinor = id.hasAbs(absMtTouchMinor)
+					id.hasWidthMajor = id.hasAbs(absMtWidthMajor)
+					id.hasWidthMinor = id.hasAbs(absMtWidthMinor)
+					id.hasOrientation = id.hasAbs(absMtOrientation)
+					id.hasPressure = id.hasAbs(absMtPressure)
 
-					ids = append(ids, &InputDevice{
-						AbsX: absX,
-						AbsY: absY,
-						Slot: slot,
-						Path: path,
-						File: inDev,
-						Name: getDeviceName(inDev),
-					})
+					ids = append(ids, id)
 				}
 			}
 		}
@@ -85,7 +185,7 @@ func getInputDevices() ([]*InputDevice, error) {
 	}
 }
 
-//Determine if a path exist and is a character input device.
+// Determine if a path exist and is a character input device.
 func isCharDevice(path string) bool {
 	fi, err := os.Stat(path)
 
@@ -93,39 +193,30 @@ func isCharDevice(path string) bool {
 		return false
 	}
 
-	m := fi.Mode()
-	if m&os.ModeCharDevice == 0 {
-		return false
-	}
-
-	return true
+	return fi.Mode()&os.ModeCharDevice != 0
 }
 
-//Determine if a event has specified Input Prop.
-func hasSpecificProp(f *os.File, key int) bool {
-	propBits := new([inputPropCnt / 8]byte)
+// Determine if a evbits has specified Event Type.
+func hasSpecificType(evbits *[96]byte, key int) bool {
+	return evbits[key/8]&(1<<uint(key%8)) != 0
+}
 
-	err := ioctl(f.Fd(), EVIOCGPROP(), uintptr(unsafe.Pointer(propBits)))
-	if err != nil {
-		return false
-	}
-
+// Determine if a propbits has specified Input Prop.
+func hasSpecificProp(propBits *[4]byte, key int) bool {
 	return propBits[key/8]&(1<<uint(key%8)) != 0
 }
 
-//Determine if a event has specified Abs Key.
-func hasSpecificAbs(f *os.File, key int) bool {
-	absBits := new([absCnt / 8]byte)
-
-	err := ioctl(f.Fd(), EVIOCGBIT(evAbs, absMax), uintptr(unsafe.Pointer(absBits)))
-	if err != nil {
-		return false
-	}
-
+// Determine if a absbits has specified Abs Key.
+func hasSpecificAbs(absBits *[8]byte, key int) bool {
 	return absBits[key/8]&(1<<uint(key%8)) != 0
 }
 
-//Read Input Device's ABS Data
+// Determine if a keybits has specified Key.
+func hasSpecificKey(keyBits *[96]byte, key int) bool {
+	return keyBits[key/8]&(1<<uint(key%8)) != 0
+}
+
+// Read Input Device's ABS Data
 func getAbsInfo(f *os.File, key int) (AbsInfo, error) {
 	absData := AbsInfo{}
 
@@ -137,7 +228,19 @@ func getAbsInfo(f *os.File, key int) (AbsInfo, error) {
 	return absData, nil
 }
 
-//Read Event's Device Name
+// Read Input Device's InputID
+func getInputID(f *os.File) (InputID, error) {
+	input_id := InputID{}
+
+	err := ioctl(f.Fd(), EVIOCGID(), uintptr(unsafe.Pointer(&input_id)))
+	if err != nil {
+		return InputID{}, err
+	}
+
+	return input_id, nil
+}
+
+// Read Event's Device Name
 func getDeviceName(f *os.File) string {
 	name := new([uinputMaxNameSize]byte)
 
@@ -151,15 +254,277 @@ func getDeviceName(f *os.File) string {
 	return string(name[:idx])
 }
 
-//Find Touch Device and Create new UInput
-func newUInputDevice(inputDev *InputDevice) (*InputDevice, error) {
+// Create new Type-B UInput device with details given from Event device
+func newTypeBDevSame(inputDev *InputDevice) (*InputDevice, error) {
 	//Open UInput
 	deviceFile, err := os.OpenFile("/dev/uinput", syscall.O_WRONLY|syscall.O_NONBLOCK, 0660)
 	if err != nil {
 		return nil, err
 	}
 
-	//Setup Touch Value
+	//Setup EV_KEY
+	err = ioctl(deviceFile.Fd(), UISETEVBIT(), evKey)
+	if err != nil {
+		_ = releaseDevice(deviceFile)
+		_ = deviceFile.Close()
+		return nil, err
+	}
+	for i := 0; i <= keyMax; i++ {
+		if !hasSpecificKey(inputDev.KeyBits, i) {
+			continue
+		}
+
+		// btnTouch
+		err = ioctl(deviceFile.Fd(), UISETKEYBIT(), uintptr(i))
+		if err != nil {
+			_ = releaseDevice(deviceFile)
+			_ = deviceFile.Close()
+			return nil, err
+		}
+	}
+
+	//Setup EV_ABS
+	err = ioctl(deviceFile.Fd(), UISETEVBIT(), evAbs)
+	if err != nil {
+		_ = releaseDevice(deviceFile)
+		_ = deviceFile.Close()
+		return nil, err
+	}
+
+	var absMins [absCnt]int32
+	var absMaxs [absCnt]int32
+	var absFuzz [absCnt]int32
+	var absFlat [absCnt]int32
+
+	for i := 0; i <= absMax; i++ {
+		if !hasSpecificAbs(inputDev.AbsBits, i) {
+			continue
+		}
+
+		err = ioctl(deviceFile.Fd(), UISETABSBIT(), uintptr(i))
+		if err != nil {
+			_ = releaseDevice(deviceFile)
+			_ = deviceFile.Close()
+			return nil, err
+		}
+
+		absMins[i] = inputDev.AbsInfos[i].Minimum
+		absMaxs[i] = inputDev.AbsInfos[i].Maximum
+		absFuzz[i] = inputDev.AbsInfos[i].Fuzz
+		absFlat[i] = inputDev.AbsInfos[i].Flat
+	}
+
+	//Setup INPUT_PROP_DIRECT
+	for i := 0; i <= inputPropMax; i++ {
+		if !hasSpecificProp(inputDev.PropBits, i) {
+			continue
+		}
+
+		// inputPropDirect
+		err = ioctl(deviceFile.Fd(), UISETPROPBIT(), uintptr(i))
+		if err != nil {
+			_ = releaseDevice(deviceFile)
+			_ = deviceFile.Close()
+			return nil, err
+		}
+	}
+
+	//Setup User Device
+	effectsMax := uint32(0)
+	if hasSpecificType(inputDev.Dbits, evFF) {
+		effectsMax = 10
+	}
+
+	newDeviceName := inputDev.Name + "2"
+	uiDev := UinputUserDev{
+		Name: toUInputName([]byte(newDeviceName)),
+		ID: InputID{
+			BusType: inputDev.IID.BusType,
+			Vendor:  inputDev.IID.Vendor,
+			Product: inputDev.IID.Product,
+			Version: inputDev.IID.Version,
+		},
+		EffectsMax: effectsMax,
+		AbsMax:     absMaxs,
+		AbsMin:     absMins,
+		AbsFuzz:    absFuzz,
+		AbsFlat:    absFlat,
+	}
+
+	//Write to Input Sub-System
+	_, err = deviceFile.Write(uInputDevToBytes(uiDev))
+	if err != nil {
+		_ = releaseDevice(deviceFile)
+		_ = deviceFile.Close()
+		return nil, err
+	}
+
+	//Declare Input Device
+	err = createDevice(deviceFile)
+	if err != nil {
+		_ = releaseDevice(deviceFile)
+		_ = deviceFile.Close()
+		return nil, err
+	}
+
+	//Stop Primary Touch Device
+	err = inputDev.Grab()
+	if err != nil {
+		_ = releaseDevice(deviceFile)
+		_ = deviceFile.Close()
+		return nil, err
+	}
+
+	time.Sleep(time.Millisecond * 200)
+
+	return &InputDevice{
+		File: deviceFile,
+		Name: newDeviceName,
+	}, nil
+}
+
+// Create new Type-A UInput device with details given from Event device
+func newTypeADevSame(inputDev *InputDevice) (*InputDevice, error) {
+	//Open UInput
+	deviceFile, err := os.OpenFile("/dev/uinput", syscall.O_WRONLY|syscall.O_NONBLOCK, 0660)
+	if err != nil {
+		return nil, err
+	}
+
+	//Setup EV_KEY
+	err = ioctl(deviceFile.Fd(), UISETEVBIT(), evKey)
+	if err != nil {
+		_ = releaseDevice(deviceFile)
+		_ = deviceFile.Close()
+		return nil, err
+	}
+	for i := 0; i <= keyMax; i++ {
+		if !hasSpecificKey(inputDev.KeyBits, i) {
+			continue
+		}
+
+		// btnTouch
+		err = ioctl(deviceFile.Fd(), UISETKEYBIT(), uintptr(i))
+		if err != nil {
+			_ = releaseDevice(deviceFile)
+			_ = deviceFile.Close()
+			return nil, err
+		}
+	}
+
+	//Setup EV_ABS
+	err = ioctl(deviceFile.Fd(), UISETEVBIT(), evAbs)
+	if err != nil {
+		_ = releaseDevice(deviceFile)
+		_ = deviceFile.Close()
+		return nil, err
+	}
+
+	var absMins [absCnt]int32
+	var absMaxs [absCnt]int32
+	var absFuzz [absCnt]int32
+	var absFlat [absCnt]int32
+
+	for i := 0; i <= absMax; i++ {
+		if !hasSpecificAbs(inputDev.AbsBits, i) {
+			continue
+		}
+
+		// Make Sure only TypeA enabled ABS got set
+		// absMtPositionX, absMtPositionY, absMtTrackingId
+		if i == absMtPositionX || i == absMtPositionY || i == absMtTrackingId {
+			err = ioctl(deviceFile.Fd(), UISETABSBIT(), uintptr(i))
+			if err != nil {
+				_ = releaseDevice(deviceFile)
+				_ = deviceFile.Close()
+				return nil, err
+			}
+
+			absMins[i] = inputDev.AbsInfos[i].Minimum
+			absMaxs[i] = inputDev.AbsInfos[i].Maximum
+			absFuzz[i] = inputDev.AbsInfos[i].Fuzz
+			absFlat[i] = inputDev.AbsInfos[i].Flat
+		}
+	}
+
+	//Setup INPUT_PROP_DIRECT
+	for i := 0; i <= inputPropMax; i++ {
+		if !hasSpecificProp(inputDev.PropBits, i) {
+			continue
+		}
+
+		// inputPropDirect
+		err = ioctl(deviceFile.Fd(), UISETPROPBIT(), uintptr(i))
+		if err != nil {
+			_ = releaseDevice(deviceFile)
+			_ = deviceFile.Close()
+			return nil, err
+		}
+	}
+
+	//Setup User Device
+	effectsMax := uint32(0)
+	if hasSpecificType(inputDev.Dbits, evFF) {
+		effectsMax = 10
+	}
+
+	newDeviceName := inputDev.Name + "2"
+	uiDev := UinputUserDev{
+		Name: toUInputName([]byte(newDeviceName)),
+		ID: InputID{
+			BusType: inputDev.IID.BusType,
+			Vendor:  inputDev.IID.Vendor,
+			Product: inputDev.IID.Product,
+			Version: inputDev.IID.Version,
+		},
+		EffectsMax: effectsMax,
+		AbsMax:     absMaxs,
+		AbsMin:     absMins,
+		AbsFuzz:    absFuzz,
+		AbsFlat:    absFlat,
+	}
+
+	//Write to Input Sub-System
+	_, err = deviceFile.Write(uInputDevToBytes(uiDev))
+	if err != nil {
+		_ = releaseDevice(deviceFile)
+		_ = deviceFile.Close()
+		return nil, err
+	}
+
+	//Declare Input Device
+	err = createDevice(deviceFile)
+	if err != nil {
+		_ = releaseDevice(deviceFile)
+		_ = deviceFile.Close()
+		return nil, err
+	}
+
+	//Stop Primary Touch Device
+	err = inputDev.Grab()
+	if err != nil {
+		_ = releaseDevice(deviceFile)
+		_ = deviceFile.Close()
+		return nil, err
+	}
+
+	time.Sleep(time.Millisecond * 200)
+
+	return &InputDevice{
+		File: deviceFile,
+		Name: newDeviceName,
+	}, nil
+}
+
+// Create new Type-A UInput device with random details
+func newTypeADevRandom(inputDev *InputDevice) (*InputDevice, error) {
+	//Open UInput
+	deviceFile, err := os.OpenFile("/dev/uinput", syscall.O_WRONLY|syscall.O_NONBLOCK, 0660)
+	if err != nil {
+		return nil, err
+	}
+
+	//Setup EV_KEY
 	err = ioctl(deviceFile.Fd(), UISETEVBIT(), evKey)
 	if err != nil {
 		_ = releaseDevice(deviceFile)
@@ -173,7 +538,7 @@ func newUInputDevice(inputDev *InputDevice) (*InputDevice, error) {
 		return nil, err
 	}
 
-	//Setup Touch Params
+	//Setup EV_ABS
 	err = ioctl(deviceFile.Fd(), UISETEVBIT(), evAbs)
 	if err != nil {
 		_ = releaseDevice(deviceFile)
@@ -207,19 +572,24 @@ func newUInputDevice(inputDev *InputDevice) (*InputDevice, error) {
 
 	//Setup User Device
 	var absMin [absCnt]int32
-	absMin[absMtPositionX] = inputDev.AbsX.Minimum
-	absMin[absMtPositionY] = inputDev.AbsY.Minimum
+	absMin[absMtPositionX] = inputDev.AbsInfos[absMtPositionX].Minimum
+	absMin[absMtPositionY] = inputDev.AbsInfos[absMtPositionY].Minimum
 	absMin[absMtTrackingId] = 0
 
 	var absMax [absCnt]int32
-	absMax[absMtPositionX] = inputDev.AbsX.Maximum
-	absMax[absMtPositionY] = inputDev.AbsY.Maximum
-	absMax[absMtTrackingId] = inputDev.Slot.Maximum
+	absMax[absMtPositionX] = inputDev.AbsInfos[absMtPositionX].Maximum
+	absMax[absMtPositionY] = inputDev.AbsInfos[absMtPositionY].Maximum
+	absMax[absMtTrackingId] = inputDev.Slots - 1
 
 	newDeviceName := randStringBytes(7)
 	newVendor := randUInt16Num(0x2000)
 	newProduct := randUInt16Num(0x2000)
 	newVersion := randUInt16Num(0x20)
+
+	effectsMax := uint32(0)
+	if hasSpecificType(inputDev.Dbits, evFF) {
+		effectsMax = 10
+	}
 
 	uiDev := UinputUserDev{
 		Name: toUInputName([]byte(newDeviceName)),
@@ -229,7 +599,7 @@ func newUInputDevice(inputDev *InputDevice) (*InputDevice, error) {
 			Product: newProduct,
 			Version: newVersion,
 		},
-		EffectsMax: 0,
+		EffectsMax: effectsMax,
 		AbsMax:     absMax,
 		AbsMin:     absMin,
 		AbsFuzz:    [absCnt]int32{},
