@@ -16,6 +16,7 @@ type TypeMode int
 
 const (
 	TYPEA TypeMode = iota
+	TYPEARND
 	TYPEB
 )
 
@@ -527,21 +528,28 @@ func touchInputStart(mode TypeMode, width, height int32, inDev *InputDevice) boo
 		currMode = mode
 
 		//Init Things
+		touchDevice = inDev
 		displayWidth = width
 		displayHeight = height
 
 		syncChannel = make(chan bool)
 		stopChannel = make(chan bool)
 
-		if mode == TYPEA {
+		if mode == TYPEA || mode == TYPEARND {
 			//Setup TypeA UInput Touch Device
-			tsDev, err := newTypeADevSame(inDev)
-			if err != nil {
-				return false
+			if mode == TYPEARND {
+				tsDev, err := newTypeADevRandom(inDev)
+				if err != nil {
+					return false
+				}
+				uInputTouch = tsDev
+			} else {
+				tsDev, err := newTypeADevSame(inDev)
+				if err != nil {
+					return false
+				}
+				uInputTouch = tsDev
 			}
-
-			touchDevice = inDev
-			uInputTouch = tsDev
 
 			//Set Default Values in Touch Contacts Array
 			touchContactsA = make([]TouchContactA, touchDevice.Slots)
@@ -560,8 +568,6 @@ func touchInputStart(mode TypeMode, width, height int32, inDev *InputDevice) boo
 			if err != nil {
 				return false
 			}
-
-			touchDevice = inDev
 			uInputTouch = tsDev
 
 			if touchDevice.hasTouchMajor {
@@ -620,11 +626,13 @@ func touchInputStart(mode TypeMode, width, height int32, inDev *InputDevice) boo
 }
 
 func touchInputStop() {
-	if touchStart && touchDevice != nil && uInputTouch != nil {
+	if touchStart && touchDevice != nil {
 		stopChannel <- true
 
-		_ = releaseDevice(uInputTouch.File)
-		_ = uInputTouch.File.Close()
+		if uInputTouch != nil {
+			_ = releaseDevice(uInputTouch.File)
+			_ = uInputTouch.File.Close()
+		}
 		_ = touchDevice.Release()
 
 		uInputTouch = nil
